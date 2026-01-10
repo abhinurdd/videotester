@@ -265,6 +265,15 @@ async def run_analysis(file_id: int, filepath: str, brand_name: Optional[str] = 
             "progress": 0,
             "message": f"Analysis failed: {str(e)}"
         }
+        
+    finally:
+        # Cleanup source file regardless of outcome
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                logger.info(f"Deleted source file: {filepath}")
+        except Exception as e:
+            logger.error(f"Failed to delete file {filepath}: {e}")
 
 
 @app.get("/api/status/{file_id}")
