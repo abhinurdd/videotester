@@ -11,7 +11,7 @@ try:
     print("This may take a few minutes depending on internet speed.")
     
     # Initialize model - this triggers download
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    model = WhisperModel("large-v3", device="cpu", compute_type="int8")
     
     print("✅ Model downloaded and cached successfully!")
     print("You can now run the analysis without waiting.")

@@ -345,17 +345,26 @@ function displayResults(data) {
               const brandLower = (brandCompliance.target_brand || "").toLowerCase();
               
               let transcriptHtml = brandCompliance.full_transcript.map(segment => {
-                  let text = segment.text;
+                  let hinglishText = segment.hinglish || segment.text || "";
+                  let englishText = segment.english || "";
                   
                   // Highlight brand mentions (case insensitive)
                   if (brandLower) {
                       const regex = new RegExp(`(${brandLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-                      text = text.replace(regex, '<span style="background: #22c55e; color: white; padding: 1px 4px; border-radius: 3px; font-weight: 600;">$1</span>');
+                      const highlight = '<span style="background: #22c55e; color: white; padding: 1px 4px; border-radius: 3px; font-weight: 600;">$1</span>';
+                      
+                      hinglishText = hinglishText.replace(regex, highlight);
+                      englishText = englishText.replace(regex, highlight);
                   }
                   
-                  return `<div style="margin-bottom: 8px;">
-                      <span style="color: #60a5fa; font-weight: 500; margin-right: 8px;">[${formatDuration(segment.time)}]</span>
-                      <span>${text}</span>
+                  return `<div style="margin-bottom: 15px; background: rgba(255,255,255,0.03); padding: 8px; border-radius: 6px;">
+                      <div style="display: flex; align-items: flex-start; gap: 10px;">
+                          <span style="color: #60a5fa; font-weight: 600; font-size: 0.8rem; min-width: 50px;">[${formatDuration(segment.time)}]</span>
+                          <div style="flex: 1;">
+                              <div style="color: var(--text-primary); font-weight: 500; font-size: 0.95rem; line-height: 1.4;">${hinglishText}</div>
+                              ${englishText ? `<div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px; font-style: italic;">${englishText}</div>` : ''}
+                          </div>
+                      </div>
                   </div>`;
               }).join('');
               

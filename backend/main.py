@@ -6,6 +6,9 @@ import sys
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +16,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, public, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +37,14 @@ logging.basicConfig(
 logger = logging.getLogger("media_validator")
 
 import numpy as np
+import redis
+import json
+
+# Setup Redis for status tracking
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+r = redis.from_url(REDIS_URL, decode_responses=True)
+
+from worker import run_analysis_task
 
 def convert_to_serializable(obj):
     """Recursively convert NumPy types to native Python types."""
@@ -55,6 +75,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Add No-Cache Middleware
+app.add_middleware(NoCacheMiddleware)
+
 # CORS middleware for frontend
 app.add_middleware(
     CORSMiddleware,
@@ -80,17 +103,39 @@ class AnalysisStatus(BaseModel):
     message: str
 
 
+# Global analyzers initialized at startup
+transcript_analyzer: Optional[TranscriptAnalyzer] = None
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup."""
+    """Initialize database and heavy AI models on startup."""
+    global transcript_analyzer
     await init_db()
-    print("Database initialized")
+    logger.info("Database initialized")
+    
+    # Pre-load heavy Whisper model once
+    logger.info("Pre-loading TranscriptAnalyzer (Whisper large-v3)...")
+    try:
+        transcript_analyzer = TranscriptAnalyzer(model_size="large-v3")
+        logger.info("TranscriptAnalyzer pre-loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to pre-load TranscriptAnalyzer: {e}")
 
 
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    try:
+        r.ping()
+        redis_status = "connected"
+    except Exception:
+        redis_status = "disconnected"
+        
+    return {
+        "status": "healthy", 
+        "timestamp": datetime.now().isoformat(),
+        "redis": redis_status
+    }
 
 
 @app.post("/api/upload")
@@ -137,23 +182,24 @@ async def upload_file(
         )
         logger.info(f"File record saved with ID: {file_id}")
         
-        # Initialize status
-        analysis_status[file_id] = {
+        # Initialize status in Redis
+        status_data = {
             "status": "pending",
             "progress": 0,
             "message": "File uploaded, queued for analysis"
         }
+        r.set(f"status:{file_id}", json.dumps(status_data), ex=3600)
         
-        # Start analysis in background
-        logger.info(f"Starting background analysis for file {file_id}")
-        background_tasks.add_task(run_analysis, file_id, str(filepath), brand_name)
+        # Start analysis in Background (via Celery)
+        logger.info(f"Dispatching Celery task for file {file_id}")
+        run_analysis_task.delay(file_id, str(filepath), brand_name)
         
         return {
             "file_id": file_id,
             "filename": file.filename,
             "file_size": file_size,
             "status": "uploaded",
-            "message": "File uploaded successfully, analysis starting..."
+            "message": "File uploaded successfully, analysis queued..."
         }
         
     except Exception as e:
@@ -161,132 +207,19 @@ async def upload_file(
         raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
 
 
-async def run_analysis(file_id: int, filepath: str, brand_name: Optional[str] = None):
-    """Run video and audio analysis in background."""
-    logger.info(f"Starting analysis for file {file_id}")
-    try:
-        # Update status
-        analysis_status[file_id] = {
-            "status": "processing",
-            "progress": 10,
-            "message": "Analyzing video..."
-        }
-        
-        # Video analysis
-        logger.info("Starting video analysis...")
-        video_analyzer = VideoAnalyzer(filepath)
-        video_metrics = await run_in_threadpool(video_analyzer.analyze)
-        logger.info(f"Video analysis complete. Metrics: {video_metrics.keys()}")
-        
-        analysis_status[file_id] = {
-            "status": "processing",
-            "progress": 50,
-            "message": "Analyzing audio..."
-        }
-        
-        # Audio analysis
-        logger.info("Starting audio analysis...")
-        audio_analyzer = AudioAnalyzer(filepath)
-        audio_metrics = await run_in_threadpool(audio_analyzer.analyze)
-        logger.info(f"Audio analysis complete. Metrics: {audio_metrics.keys()}")
-        
-        analysis_status[file_id] = {
-            "status": "processing",
-            "progress": 80,
-            "message": "Calculating scores..."
-        }
-        
-        # Brand Compliance Check
-        brand_compliance = {}
-        if brand_name:
-            logger.info(f"Starting transcript analysis for brand: {brand_name}")
-            analysis_status[file_id]["message"] = "Checking brand compliance..."
-            
-            try:
-                def process_transcript():
-                    # Use small model for better accuracy
-                    import gc
-                    analyzer = TranscriptAnalyzer(model_size="small")
-                    seg = analyzer.transcribe_audio(filepath)
-                    result = analyzer.count_brand_mentions(seg, brand_name)
-                    del analyzer
-                    gc.collect()
-                    return result
-
-                brand_result = await run_in_threadpool(process_transcript)
-                
-                brand_compliance = brand_result
-                logger.info(f"Brand check complete: {brand_result['mention_count']} mentions")
-                
-            except Exception as e:
-                logger.error(f"Brand compliance check failed: {e}")
-                brand_compliance = {"error": str(e)}
-        
-        # Calculate scores
-        score_result = calculate_quality_score(video_metrics, audio_metrics)
-        logger.info(f"Scoring complete. Overall score: {score_result['overall_score']}")
-        
-        # Build raw metrics
-        raw_metrics = {
-            "video": video_metrics,
-            "audio": audio_metrics
-        }
-        
-        if brand_compliance:
-            raw_metrics["brand_compliance"] = brand_compliance
-
-        # Sanitize data for JSON serialization
-        score_result = convert_to_serializable(score_result)
-        raw_metrics = convert_to_serializable(raw_metrics)
-        
-        # Save analysis
-        await save_analysis(
-            file_id=file_id,
-            overall_score=score_result["overall_score"],
-            video_score=score_result["video_score"],
-            audio_score=score_result["audio_score"],
-            temporal_score=score_result["temporal_score"],
-            raw_metrics=raw_metrics,
-            issues=score_result["issues"]
-        )
-        logger.info("Analysis saved to database")
-        
-        analysis_status[file_id] = {
-            "status": "completed",
-            "progress": 100,
-            "message": "Analysis complete"
-        }
-        logger.info(f"Processing complete for file {file_id}")
-        
-    except Exception as e:
-        logger.error(f"Analysis failed for file {file_id}: {str(e)}", exc_info=True)
-        analysis_status[file_id] = {
-            "status": "failed",
-            "progress": 0,
-            "message": f"Analysis failed: {str(e)}"
-        }
-        
-    finally:
-        # Cleanup source file regardless of outcome
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                logger.info(f"Deleted source file: {filepath}")
-        except Exception as e:
-            logger.error(f"Failed to delete file {filepath}: {e}")
-
-
 @app.get("/api/status/{file_id}")
 async def get_status(file_id: int):
     """Get analysis status for a file."""
-    if file_id in analysis_status:
-        status = analysis_status[file_id]
+    # Check Redis first (most recent status)
+    status_json = r.get(f"status:{file_id}")
+    if status_json:
+        status_data = json.loads(status_json)
         return {
             "file_id": file_id,
-            **status
+            **status_data
         }
     
-    # Check if analysis exists in database
+    # Check if analysis exists in database (completed long ago)
     analysis = await get_analysis_by_file_id(file_id)
     if analysis:
         return {
@@ -296,14 +229,14 @@ async def get_status(file_id: int):
             "message": "Analysis complete"
         }
     
-    # Check if file exists
+    # Check if file exists but no status/analysis yet
     file_record = await get_file_by_id(file_id)
     if file_record:
         return {
             "file_id": file_id,
             "status": "pending",
             "progress": 0,
-            "message": "Waiting for analysis"
+            "message": "Waiting in queue..."
         }
     
     raise HTTPException(status_code=404, detail="File not found")
@@ -312,26 +245,27 @@ async def get_status(file_id: int):
 @app.get("/api/analyze/{file_id}")
 async def get_analysis(file_id: int):
     """Get analysis results for a file."""
-    # Check if still processing
-    if file_id in analysis_status:
-        status = analysis_status[file_id]
-        if status["status"] == "processing":
+    # Check if still processing via Redis
+    status_json = r.get(f"status:{file_id}")
+    if status_json:
+        status_data = json.loads(status_json)
+        if status_data["status"] == "processing" or status_data["status"] == "pending":
             return JSONResponse(
                 status_code=202,
                 content={
                     "file_id": file_id,
-                    "status": "processing",
-                    "progress": status["progress"],
-                    "message": status["message"]
+                    "status": status_data["status"],
+                    "progress": status_data["progress"],
+                    "message": status_data["message"]
                 }
             )
-        elif status["status"] == "failed":
+        elif status_data["status"] == "failed":
             return JSONResponse(
                 status_code=500,
                 content={
                     "file_id": file_id,
                     "status": "failed",
-                    "message": status["message"]
+                    "message": status_data["message"]
                 }
             )
     
@@ -443,9 +377,8 @@ async def delete_file(file_id: int):
     deleted = await delete_file_record(file_id)
     
     if deleted:
-        # Clean up status
-        if file_id in analysis_status:
-            del analysis_status[file_id]
+        # Clean up status from Redis
+        r.delete(f"status:{file_id}")
         return {"status": "deleted", "file_id": file_id}
     
     raise HTTPException(status_code=500, detail="Failed to delete file")
