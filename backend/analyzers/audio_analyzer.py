@@ -279,7 +279,7 @@ class AudioAnalyzer:
                     "type": "audio",
                     "severity": "high",
                     "message": f"Audio clipping detected at: {timestamps}",
-                    "recommendation": "Reduce input gain or normalize audio to prevent distortion"
+                    "recommendation": "Parts of the audio are too loud and getting distorted. Try lowering the input volume or adjusting levels during recording."
                 })
         
         snr = metrics.get("snr_db", 0)
@@ -288,14 +288,14 @@ class AudioAnalyzer:
                 "type": "audio",
                 "severity": "high",
                 "message": f"Very low SNR: {snr:.1f} dB",
-                "recommendation": "Audio has significant background noise, consider noise reduction"
+                "recommendation": "There’s a lot of background noise. Try recording in a quieter environment or use noise reduction."
             })
         elif snr < 20:
             issues.append({
                 "type": "audio",
                 "severity": "medium",
                 "message": f"Low SNR: {snr:.1f} dB",
-                "recommendation": "Noticeable background noise present"
+                "recommendation": "Some background noise is noticeable. You may want to clean it up slightly."
             })
         
         loudness = metrics.get("loudness_lufs", -24)
@@ -304,14 +304,14 @@ class AudioAnalyzer:
                 "type": "audio",
                 "severity": "medium",
                 "message": f"Audio too quiet: {loudness:.1f} LUFS",
-                "recommendation": "Consider normalizing audio to -14 to -16 LUFS"
+                "recommendation": "The audio is quite soft. Increasing the volume or normalizing it can improve clarity."
             })
         elif loudness > -10:
             issues.append({
                 "type": "audio",
                 "severity": "medium",
                 "message": f"Audio very loud: {loudness:.1f} LUFS",
-                "recommendation": "Audio may cause discomfort, consider reducing levels"
+                "recommendation": "The audio is quite loud and may feel harsh. Lowering the levels slightly will make it more comfortable to listen to."
             })
         
         dynamic_range = metrics.get("dynamic_range_db", 0)
@@ -320,7 +320,7 @@ class AudioAnalyzer:
                 "type": "audio",
                 "severity": "low",
                 "message": f"Low dynamic range: {dynamic_range:.1f} dB",
-                "recommendation": "Audio may sound compressed or fatiguing"
+                "recommendation": "The audio sounds a bit flat. Adding some variation in volume can make it feel more natural."
             })
         
         clarity = metrics.get("speech_clarity_score", 50)
@@ -329,7 +329,7 @@ class AudioAnalyzer:
                 "type": "audio",
                 "severity": "medium",
                 "message": "Low speech clarity score",
-                "recommendation": "Speech may be difficult to understand"
+                "recommendation": "Speech isn’t very clear. Improving mic quality or reducing background noise could help."
             })
         
         sample_rate = metrics.get("sample_rate", 44100)
@@ -338,7 +338,7 @@ class AudioAnalyzer:
                 "type": "audio",
                 "severity": "high",
                 "message": f"Low sample rate: {sample_rate} Hz",
-                "recommendation": "Audio quality limited by low sample rate"
+                "recommendation": "The audio quality is limited. Recording at a higher sample rate will improve overall sound."
             })
-        
+
         return issues

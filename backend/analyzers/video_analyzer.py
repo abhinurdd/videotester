@@ -69,11 +69,11 @@ class VideoAnalyzer:
                 text=True
             )
             if not result.stdout:
-                print(f"ffprobe failed: {result.stderr}")
+                print(f"ffprobe failed to produce output for {self.filepath}. Error: {result.stderr}")
                 return None
             return json.loads(result.stdout)
         except Exception as e:
-            print(f"Error probing video: {e}")
+            print(f"Exception during ffprobe for {self.filepath}: {str(e)}")
             return None
     
     def _get_video_stream(self) -> Dict[str, Any]:
@@ -314,14 +314,14 @@ class VideoAnalyzer:
                 "type": "video",
                 "severity": "high",
                 "message": f"Low resolution detected: {width}x{height}",
-                "recommendation": "Consider using higher resolution source material"
+                "recommendation": "The video looks quite pixelated. Using a higher resolution source will improve clarity."
             })
         elif width < 1280 or height < 720:
             issues.append({
                 "type": "video",
                 "severity": "medium",
                 "message": f"Sub-HD resolution: {width}x{height}",
-                "recommendation": "HD (1280x720) or higher recommended for quality content"
+                "recommendation": "The video is below HD quality. Exporting in 720p or higher will make it look sharper."
             })
         
         bitrate = metrics.get("bitrate", 0)
@@ -330,14 +330,14 @@ class VideoAnalyzer:
                 "type": "video",
                 "severity": "high",
                 "message": f"Very low bitrate: {bitrate} kbps",
-                "recommendation": "Increase encoding bitrate to reduce compression artifacts"
+                "recommendation": "The video is heavily compressed. Increasing the bitrate will reduce visible artifacts."
             })
         elif bitrate < 2500:
             issues.append({
                 "type": "video",
                 "severity": "medium",
                 "message": f"Low bitrate for resolution: {bitrate} kbps",
-                "recommendation": "Higher bitrate recommended for clearer video"
+                "recommendation": "Some compression artifacts may be visible. A slightly higher bitrate can improve clarity."
             })
         
         brisque = metrics.get("brisque_score", 50)
@@ -346,14 +346,14 @@ class VideoAnalyzer:
                 "type": "video",
                 "severity": "high",
                 "message": f"Low visual quality score: {brisque:.1f}/100",
-                "recommendation": "Video shows significant quality degradation or artifacts"
+                "recommendation": "The video quality is noticeably degraded. Re-encoding with better settings may help."
             })
         elif brisque < 60:
             issues.append({
                 "type": "video",
                 "severity": "medium",
                 "message": f"Below average visual quality: {brisque:.1f}/100",
-                "recommendation": "Consider using higher quality encoding settings"
+                "recommendation": "The video looks slightly soft or compressed. Improving export settings can enhance quality."
             })
         
         blocking = metrics.get("blocking_artifacts", [])
@@ -363,7 +363,7 @@ class VideoAnalyzer:
                 "type": "video",
                 "severity": "medium",
                 "message": f"Blocking artifacts in dark scenes at: {timestamps}",
-                "recommendation": "Increase bitrate or use a codec with better dark scene handling"
+                "recommendation": "You may notice blocky patches in darker areas. Increasing bitrate or adjusting encoding can help."
             })
         
         stability = metrics.get("temporal_stability", 100)
@@ -372,7 +372,7 @@ class VideoAnalyzer:
                 "type": "video",
                 "severity": "medium",
                 "message": f"Unstable quality: temporal stability {stability:.1f}%",
-                "recommendation": "Video quality varies significantly throughout playback"
+                "recommendation": "The video quality fluctuates over time. A more consistent encoding setting can smooth this out."
             })
         
         drops = metrics.get("quality_drops", [])
@@ -382,7 +382,7 @@ class VideoAnalyzer:
                 "type": "video",
                 "severity": "low",
                 "message": f"Quality drops detected at: {drop_times}",
-                "recommendation": "Some frames show lower quality than average"
+                "recommendation": "There are brief moments where quality dips slightly, but overall playback remains acceptable."
             })
-        
-        return issues
+
+        return issues

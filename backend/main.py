@@ -3,6 +3,7 @@ import uuid
 import asyncio
 import logging
 import sys
+import shutil
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
@@ -37,12 +38,33 @@ logging.basicConfig(
 logger = logging.getLogger("media_validator")
 
 import numpy as np
-import redis
+import redis.asyncio as redis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
 import json
 
-# Setup Redis for status tracking
+# Setup Redis for status tracking with connection pooling
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-r = redis.from_url(REDIS_URL, decode_responses=True)
+
+# Configure robust retry strategy for connection resets
+retry_strategy = Retry(ExponentialBackoff(), 3)
+
+# Limit connections per process and add health checks
+# health_check_interval ensures we don't use stale connections closed by RedisLabs
+pool = redis.ConnectionPool.from_url(
+    REDIS_URL, 
+    decode_responses=True, 
+    max_connections=10,
+    health_check_interval=30,
+    socket_connect_timeout=5,
+    socket_keepalive=True,
+    retry_on_timeout=True
+)
+r = redis.Redis(
+    connection_pool=pool, 
+    retry=retry_strategy, 
+    retry_on_timeout=True
+)
 
 from worker import run_analysis_task
 
@@ -106,27 +128,46 @@ class AnalysisStatus(BaseModel):
 # Global analyzers initialized at startup
 transcript_analyzer: Optional[TranscriptAnalyzer] = None
 
+class R2AnalysisRequest(BaseModel):
+    r2_url: str
+    campaign_id: int
+    creator_id: int
+    brand_name: Optional[str] = None
+    content_type: Optional[str] = None
+    callback_url: Optional[str] = None
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database and heavy AI models on startup."""
+    """Initialize database on startup."""
     global transcript_analyzer
     await init_db()
     logger.info("Database initialized")
     
-    # Pre-load heavy Whisper model once
-    logger.info("Pre-loading TranscriptAnalyzer (Whisper large-v3)...")
+    # Initialize TranscriptAnalyzer using Groq API
+    logger.info("Initializing TranscriptAnalyzer (Groq API)...")
     try:
-        transcript_analyzer = TranscriptAnalyzer(model_size="large-v3")
-        logger.info("TranscriptAnalyzer pre-loaded successfully")
+        transcript_analyzer = TranscriptAnalyzer()
+        logger.info("TranscriptAnalyzer initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to pre-load TranscriptAnalyzer: {e}")
+        logger.error(f"Failed to initialize TranscriptAnalyzer: {e}")
+    
+    # Check for FFmpeg/FFprobe dependencies
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    
+    if not ffmpeg_path or not ffprobe_path:
+        logger.critical("CRITICAL: FFmpeg or FFprobe not found in PATH!")
+        logger.critical("Video and audio analysis will FAIL. Please install FFmpeg and add it to your PATH.")
+    else:
+        logger.info(f"FFmpeg found at: {ffmpeg_path}")
+        logger.info(f"FFprobe found at: {ffprobe_path}")
 
 
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
     try:
-        r.ping()
+        await r.ping()
         redis_status = "connected"
     except Exception:
         redis_status = "disconnected"
@@ -142,13 +183,17 @@ async def health_check():
 async def upload_file(
     background_tasks: BackgroundTasks, 
     file: UploadFile = File(...),
-    brand_name: Optional[str] = Form(None)
+    brand_name: Optional[str] = Form(None),
+    content_type: Optional[str] = Form(None)
 ):
     """Upload a media file for analysis."""
     logger.info(f"Received upload request: {file.filename}")
     
     # Validate file type
-    allowed_extensions = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.mp3', '.wav', '.flac', '.m4a', '.aac'}
+    video_exts = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.mpeg', '.mpg', '.3gp', '.m4v'}
+    image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.heic', '.heif'}
+    allowed_extensions = video_exts | image_exts | {'.mp3', '.wav', '.flac', '.m4a', '.aac'}
+    
     file_ext = Path(file.filename).suffix.lower()
     
     if file_ext not in allowed_extensions:
@@ -188,11 +233,11 @@ async def upload_file(
             "progress": 0,
             "message": "File uploaded, queued for analysis"
         }
-        r.set(f"status:{file_id}", json.dumps(status_data), ex=3600)
+        await r.set(f"status:{file_id}", json.dumps(status_data), ex=3600)
         
         # Start analysis in Background (via Celery)
-        logger.info(f"Dispatching Celery task for file {file_id}")
-        run_analysis_task.delay(file_id, str(filepath), brand_name)
+        logger.info(f"Dispatching Celery task for file {file_id} with content_type: {content_type}")
+        run_analysis_task.delay(file_id, str(filepath), brand_name, content_type=content_type)
         
         return {
             "file_id": file_id,
@@ -207,11 +252,65 @@ async def upload_file(
         raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
 
 
+@app.post("/api/analyze-r2")
+async def analyze_r2(request: R2AnalysisRequest, background_tasks: BackgroundTasks):
+    """Analyze a media file from an R2 URL."""
+    logger.info(f"Received R2 analysis request: {request.r2_url}")
+    
+    # Generate unique ID for this analysis run
+    unique_id = str(uuid.uuid4())[:8]
+    filename = Path(request.r2_url).name.split('?')[0] # Get filename without query params
+    safe_filename = f"r2_{unique_id}_{filename}"
+    filepath = UPLOAD_DIR / safe_filename
+    
+    # We will download the file in the background or synchronously?
+    # Usually, analysis takes time, so we should do it in the background.
+    # However, we need to save a file record first.
+    
+    # Create a placeholder file record
+    file_id = await save_file_record(
+        filename=filename,
+        filepath=str(filepath),
+        file_size=0 # Will be updated after download
+    )
+    
+    # Initialize status in Redis
+    status_data = {
+        "status": "pending",
+        "progress": 0,
+        "message": "Queued for R2 download and analysis"
+    }
+    await r.set(f"status:{file_id}", json.dumps(status_data), ex=3600)
+    
+    # Pass metadata to the worker
+    from worker import run_analysis_task
+    
+    # We'll modify run_analysis_task to handle R2 download if r2_url is provided
+    run_analysis_task.delay(
+        file_id=file_id, 
+        filepath=str(filepath), 
+        brand_name=request.brand_name,
+        r2_url=request.r2_url,
+        callback_url=request.callback_url,
+        content_type=request.content_type,
+        metadata={
+            "campaign_id": request.campaign_id,
+            "creator_id": request.creator_id
+        }
+    )
+    
+    return {
+        "file_id": file_id,
+        "status": "queued",
+        "message": "Analysis started from R2 URL"
+    }
+
+
 @app.get("/api/status/{file_id}")
 async def get_status(file_id: int):
     """Get analysis status for a file."""
     # Check Redis first (most recent status)
-    status_json = r.get(f"status:{file_id}")
+    status_json = await r.get(f"status:{file_id}")
     if status_json:
         status_data = json.loads(status_json)
         return {
@@ -246,7 +345,7 @@ async def get_status(file_id: int):
 async def get_analysis(file_id: int):
     """Get analysis results for a file."""
     # Check if still processing via Redis
-    status_json = r.get(f"status:{file_id}")
+    status_json = await r.get(f"status:{file_id}")
     if status_json:
         status_data = json.loads(status_json)
         if status_data["status"] == "processing" or status_data["status"] == "pending":
@@ -290,7 +389,25 @@ async def get_analysis(file_id: int):
         "raw_metrics": analysis["raw_metrics"],
         "issues": analysis["issues"],
         "brand_compliance": analysis["raw_metrics"].get("brand_compliance", {}),
-        "technical_specs": extract_technical_specs(analysis["raw_metrics"])
+        "technical_status": extract_technical_status(analysis["raw_metrics"]),
+        "technical_specs": extract_technical_specs_legacy(analysis["raw_metrics"])
+    }
+
+
+def extract_technical_specs_legacy(raw_metrics: dict) -> dict:
+    """Old format for backward compatibility with frontend."""
+    video = raw_metrics.get("video", {})
+    audio = raw_metrics.get("audio", {})
+    res = video.get("resolution", {})
+    return {
+        "resolution": f"{res.get('width', 0)}x{res.get('height', 0)}",
+        "bitrate_kbps": video.get("bitrate", 0),
+        "codec": video.get("codec", "unknown"),
+        "fps": video.get("fps", 0),
+        "duration_seconds": video.get("duration", 0),
+        "audio_sample_rate": audio.get("sample_rate", 0),
+        "audio_channels": audio.get("channels", 0),
+        "loudness_lufs": audio.get("loudness_lufs", 0)
     }
 
 
@@ -322,22 +439,72 @@ def get_grade(score: float) -> str:
         return "F"
 
 
-def extract_technical_specs(raw_metrics: dict) -> dict:
-    """Extract technical specifications from raw metrics."""
+def extract_technical_status(raw_metrics: dict) -> dict:
+    """Extract detailed technical status from raw metrics."""
     video = raw_metrics.get("video", {})
-    audio = raw_metrics.get("audio", {})
+    res = video.get("resolution", {})
+    w, h = res.get("width", 0), res.get("height", 0)
     
-    resolution = video.get("resolution", {})
+    if w == 0 or h == 0:
+        return {"error": "Invalid resolution data"}
     
+    aspect_ratio = round(w / h, 2)
+    short_side = min(w, h)
+    
+    # Orientation
+    if h > w:
+        orientation = "portrait"
+    elif w > h:
+        orientation = "landscape"
+    else:
+        orientation = "square"
+    
+    # Resolution Label
+    if short_side >= 2160:
+        label = "4K Ultra HD"
+    elif short_side >= 1080:
+        label = "1080p Full HD"
+    elif short_side >= 720:
+        label = "720p HD"
+    else:
+        label = f"{short_side}p SD"
+        
+    if orientation == "portrait":
+        label += " (Vertical/Reel)"
+    
+    # Content Type & Aspect Ratio Message
+    content_type = "unknown"
+    ar_message = "Standard aspect ratio."
+    safe_area_warning = 0
+    
+    if orientation == "portrait":
+        if 0.5 <= aspect_ratio <= 0.6: # Approx 9:16
+            content_type = "reels"
+            ar_message = "Perfectly suitable for reels (9:16 vertical)."
+        else:
+            content_type = "stories"
+            ar_message = "Vertical format, but may have black bars on some devices."
+            safe_area_warning = 1
+    elif orientation == "landscape":
+        if 1.7 <= aspect_ratio <= 1.8: # Approx 16:9
+            content_type = "wide"
+            ar_message = "Standard widescreen (16:9)."
+        else:
+            content_type = "video"
+    elif orientation == "square":
+        content_type = "post"
+        ar_message = "Square format (1:1), great for feed posts."
+
     return {
-        "resolution": f"{resolution.get('width', 0)}x{resolution.get('height', 0)}",
-        "bitrate_kbps": video.get("bitrate", 0),
-        "codec": video.get("codec", "unknown"),
-        "fps": video.get("fps", 0),
-        "duration_seconds": video.get("duration", 0),
-        "audio_sample_rate": audio.get("sample_rate", 0),
-        "audio_channels": audio.get("channels", 0),
-        "loudness_lufs": audio.get("loudness_lufs", 0)
+        "short_side": short_side,
+        "is_high_res": 1 if short_side >= 1080 else 0,
+        "orientation": orientation,
+        "aspect_ratio": aspect_ratio,
+        "resolution_label": label if w > 0 else "N/A",
+        "actual_resolution": f"{w}x{h}" if w > 0 else "N/A",
+        "safe_area_warning": safe_area_warning,
+        "aspect_ratio_message": ar_message if w > 0 else "No video data available.",
+        "content_type_validated": content_type
     }
 
 
@@ -378,7 +545,7 @@ async def delete_file(file_id: int):
     
     if deleted:
         # Clean up status from Redis
-        r.delete(f"status:{file_id}")
+        await r.delete(f"status:{file_id}")
         return {"status": "deleted", "file_id": file_id}
     
     raise HTTPException(status_code=500, detail="Failed to delete file")

@@ -297,28 +297,31 @@ function displayResults(data) {
   animateScore(audioScore, audioScoreBar, data.audio_score || 0);
   animateScore(audioScore, audioScoreBar, data.audio_score || 0);
   // Temporal score removed
-  
   // Update Brand Compliance
   const brandCard = document.getElementById("brandCard");
-  const brandCompliance = data.brand_compliance;
+  const brandCompliance = data.brand_compliance || {};
   
   if (brandCard) {
-      if (brandCompliance && brandCompliance.target_brand) {
+      if (brandCompliance.target_brand || brandCompliance.error) {
           brandCard.style.display = "block";
-          document.getElementById("targetBrandName").textContent = brandCompliance.target_brand;
+          document.getElementById("targetBrandName").textContent = brandCompliance.target_brand || "Unknown Brand";
           
           const count = brandCompliance.mention_count || 0;
           const countEl = document.getElementById("brandCount");
           countEl.textContent = count;
           
           const badge = document.getElementById("brandBadge");
-          if (count > 0) {
+          if (brandCompliance.error) {
+              badge.textContent = "ERROR";
+              badge.style.background = "#ef4444";
+              badge.style.color = "white";
+          } else if (count > 0) {
               badge.textContent = "PASS";
               badge.style.background = "#22c55e";
               badge.style.color = "white";
           } else {
               badge.textContent = "WARNING";
-              badge.style.background = "#eab308"; // yellow/orange
+              badge.style.background = "#eab308"; 
               badge.style.color = "black";
           }
           
@@ -327,58 +330,56 @@ function displayResults(data) {
           if (brandCompliance.timestamps && brandCompliance.timestamps.length > 0) {
               brandCompliance.timestamps.forEach(ts => {
                  const tag = document.createElement("span");
-                 tag.style.background = "rgba(255,255,255,0.1)";
-                 tag.style.color = "var(--text-primary)";
-                 tag.style.padding = "4px 8px";
-                 tag.style.borderRadius = "4px";
-                 tag.style.fontSize = "0.85rem";
+                 tag.className = "timestamp-tag"; // Use a class for styling
                  tag.textContent = formatDuration(ts);
                  timestampContainer.appendChild(tag);
               });
+          } else if (brandCompliance.error) {
+              timestampContainer.innerHTML = `<div style="color: #ef4444; font-size: 0.8rem;">${brandCompliance.error}</div>`;
           }
           
           // Display full transcript if available
           const transcriptCard = document.getElementById("transcriptCard");
           const transcriptContent = document.getElementById("transcriptContent");
-          if (transcriptCard && transcriptContent && brandCompliance.full_transcript && brandCompliance.full_transcript.length > 0) {
-              transcriptCard.style.display = "block";
-              const brandLower = (brandCompliance.target_brand || "").toLowerCase();
-              
-              let transcriptHtml = brandCompliance.full_transcript.map(segment => {
-                  let hinglishText = segment.hinglish || segment.text || "";
-                  let englishText = segment.english || "";
+          if (transcriptCard && transcriptContent) {
+              if (brandCompliance.full_transcript && brandCompliance.full_transcript.length > 0) {
+                  transcriptCard.style.display = "block";
+                  const brandLower = (brandCompliance.target_brand || "").toLowerCase();
                   
-                  // Highlight brand mentions (case insensitive)
-                  if (brandLower) {
-                      const regex = new RegExp(`(${brandLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-                      const highlight = '<span style="background: #22c55e; color: white; padding: 1px 4px; border-radius: 3px; font-weight: 600;">$1</span>';
+                  let transcriptHtml = brandCompliance.full_transcript.map(segment => {
+                      let hinglishText = segment.hinglish || segment.text || "---";
+                      let englishText = segment.english || "";
                       
-                      hinglishText = hinglishText.replace(regex, highlight);
-                      englishText = englishText.replace(regex, highlight);
-                  }
-                  
-                  return `<div style="margin-bottom: 15px; background: rgba(255,255,255,0.03); padding: 8px; border-radius: 6px;">
-                      <div style="display: flex; align-items: flex-start; gap: 10px;">
-                          <span style="color: #60a5fa; font-weight: 600; font-size: 0.8rem; min-width: 50px;">[${formatDuration(segment.time)}]</span>
-                          <div style="flex: 1;">
-                              <div style="color: var(--text-primary); font-weight: 500; font-size: 0.95rem; line-height: 1.4;">${hinglishText}</div>
-                              ${englishText ? `<div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px; font-style: italic;">${englishText}</div>` : ''}
+                      // Highlight brand mentions
+                      if (brandLower && hinglishText !== "---") {
+                          const regex = new RegExp(`(${brandLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+                          const highlight = '<span class="brand-highlight">$1</span>';
+                          hinglishText = hinglishText.replace(regex, highlight);
+                          if (englishText) englishText = englishText.replace(regex, highlight);
+                      }
+                      
+                      return `
+                        <div class="transcript-row">
+                          <span class="transcript-time">[${formatDuration(segment.time)}]</span>
+                          <div class="transcript-text">
+                              <div class="hinglish">${hinglishText}</div>
+                              ${englishText ? `<div class="english">${englishText}</div>` : ''}
                           </div>
-                      </div>
-                  </div>`;
-              }).join('');
-              
-              transcriptContent.innerHTML = transcriptHtml;
-          } else if (transcriptCard) {
-              transcriptCard.style.display = "none";
+                        </div>`;
+                  }).join('');
+                  transcriptContent.innerHTML = transcriptHtml;
+              } else {
+                  transcriptCard.style.display = "block";
+                  transcriptContent.innerHTML = `<div class="no-transcript">No speech detected in audio.</div>`;
+              }
           }
       } else {
           brandCard.style.display = "none";
-          // Also hide transcript card if no brand compliance
           const transcriptCard = document.getElementById("transcriptCard");
           if (transcriptCard) transcriptCard.style.display = "none";
       }
   }
+ }
 
   // Update technical specs
   const specs = data.technical_specs || {};

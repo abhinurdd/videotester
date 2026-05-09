@@ -849,3 +849,87 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
 }
+
+/* Transcript & Brand Styles */
+.timestamp-tag {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    border: 1px solid var(--border-color);
+    transition: all var(--transition-fast);
+}
+
+.timestamp-tag:hover {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: var(--accent-primary);
+}
+
+.transcript-row {
+    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 12px;
+    border-radius: 10px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    border: 1px solid transparent;
+    transition: background var(--transition-fast);
+}
+
+.transcript-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.05);
+}
+
+.transcript-time {
+    color: var(--accent-secondary);
+    font-weight: 600;
+    font-size: 0.85rem;
+    min-width: 55px;
+    padding-top: 2px;
+}
+
+.transcript-text {
+    flex: 1;
+}
+
+.hinglish {
+    color: var(--text-primary);
+    font-weight: 500;
+    font-size: 1rem;
+    line-height: 1.5;
+}
+
+.english {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-top: 6px;
+    font-style: italic;
+    opacity: 0.9;
+}
+
+.brand-highlight {
+    background: var(--success);
+    color: white;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-weight: 600;
+    box-shadow: 0 0 10px var(--success-glow);
+}
+
+.no-transcript {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 30px;
+    font-style: italic;
+    font-size: 1rem;
+}
+
+.brand-result #brandCount {
+    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent-secondary) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
