@@ -2,9 +2,17 @@ import os
 import asyncio
 import logging
 import gc
+import sys
 import shutil
 import json
 import redis
+import sys
+import os
+
+# Ensure the current directory is in sys.path for worker imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from r2_utils import download_from_url
 from redis.retry import Retry
 from redis.backoff import ExponentialBackoff
 import numpy as np
@@ -116,7 +124,6 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
         # Step 0: Download from R2 if URL provided
         if r2_url:
             update_status(file_id, "processing", 5, "Downloading from R2...")
-            from r2_utils import download_from_url
             if not download_from_url(r2_url, filepath):
                 raise Exception("Failed to download file from R2")
             
@@ -191,25 +198,44 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
             if aspect_ratio > 1.1: orientation = "landscape"
             elif aspect_ratio < 0.9: orientation = "portrait"
 
+            # Cleanup audio and video metrics for clean response
+            clean_audio = {k: v for k, v in audio_metrics.items() if k != "issues"}
+            clean_video = {k: v for k, v in video_metrics.items() if k not in ["issues", "frame_count", "frame_scores"]}
+            
+            # Refine technical status labels
+            res_label = f"{min(w, h)}p"
+            if min(w, h) >= 720: res_label += " HD"
+            if orientation == "portrait": res_label += " (Vertical/Reel)"
+            elif orientation == "landscape": res_label += " (Horizontal)"
+            
+            ar_msg = f"Suitable for {content_type or 'video'}."
+            if orientation == "portrait" and 0.5 < aspect_ratio < 0.6:
+                ar_msg = "Perfectly suitable for reels (9:16 vertical)."
+            elif orientation == "landscape" and 1.7 < aspect_ratio < 1.8:
+                ar_msg = "Perfectly suitable for landscape (16:9)."
+
+            # Round durations
+            clean_video["duration"] = round(clean_video.get("duration", 0), 2)
+            clean_audio["duration"] = round(clean_audio.get("duration", 0), 2)
+
             final_payload = {
-                "audio": audio_metrics,
-                "video": video_metrics, # Keep video specific metrics
+                "audio": clean_audio,
+                "video": clean_video,
                 "brand_compliance": {
-                    "summary": f"Video analysis for {brand_name}",
-                    "transcript": " ".join([s.get("text", "") for s in (brand_compliance.get("full_transcript", []))]) if brand_compliance else "",
+                    "timestamps": brand_compliance.get("timestamps", []),
                     "target_brand": brand_name,
                     "mention_count": brand_compliance.get("mention_count", 0),
-                    "logo_visibility": "none" # Video analyzer currently doesn't do logos
+                    "full_transcript": brand_compliance.get("full_transcript", [])
                 },
                 "technical_status": {
                     "short_side": min(w, h),
-                    "is_high_res": 1 if min(w, h) >= 720 else 0,
+                    "is_high_res": 1 if min(w, h) > 720 else 0,
                     "orientation": orientation,
                     "aspect_ratio": aspect_ratio,
-                    "resolution_label": f"{min(w, h)}p",
+                    "resolution_label": res_label,
                     "actual_resolution": f"{w}x{h}",
                     "safe_area_warning": 0,
-                    "aspect_ratio_message": f"Suitable for {content_type or 'video'}.",
+                    "aspect_ratio_message": ar_msg,
                     "content_type_validated": content_type or ("reels" if orientation == "portrait" else "posts")
                 }
             }
@@ -219,15 +245,13 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
             image_analyzer = ImageAnalyzer()
             final_payload = image_analyzer.analyze(filepath, target_brand=brand_name)
             
-            # Step 2: Scoring (Synthetic for images)
+            # Step 2: Scoring (Image)
             score_result = {
-                "overall_score": final_payload["image"]["content"]["image_vibrancy_score"],
-                "video_score": final_payload["image"]["content"]["image_vibrancy_score"],
+                "overall_score": final_payload.get("overall_score", 50),
+                "video_score": final_payload.get("overall_score", 50),
                 "audio_score": 0,
-                "issues": []
+                "issues": final_payload.get("image", {}).get("issues", [])
             }
-            if final_payload["image"]["sharpness_score"] < 50:
-                score_result["issues"].append({"type": "image", "severity": "medium", "message": "Low image sharpness"})
 
         # Finalize
         update_status(file_id, "processing", 90, "Finalizing results...")
@@ -293,8 +317,13 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
             pass
 
 if __name__ == "__main__":
-    # Increased concurrency to 50 as requested
-    # Using 'prefork' or 'gevent' for high concurrency. 
-    # 'prefork' is better for CPU tasks, 'gevent' for IO.
-    # Given the 50 concurrent requirement, we'll use prefork with 50 workers.
-    celery.worker_main(['worker', '--loglevel=info', '--concurrency=50', '--pool=prefork'])
+    # Optimized for t4g.small (2GB RAM)
+    # handles ~5-6 requests per minute comfortably while keeping RAM usage stable.
+    # Using 'prefork' (default) for CPU-heavy video/audio analysis.
+    # --max-tasks-per-child prevents memory leaks from OpenCV/Librosa.
+    celery.worker_main([
+        'worker', 
+        '--loglevel=info', 
+        '--concurrency=2', 
+        '--max-tasks-per-child=10'
+    ])
