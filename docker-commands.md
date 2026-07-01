@@ -4,12 +4,16 @@
 
 ### 1. Build the Docker image
 ```bash
-docker build -t technurdd/videotester .
+# Using the build script
+./build.sh
+
+# Or manually
+docker build -t content-analysis .
 ```
 
-### 2. Tag the image (optional, if you want a specific version)
+### 2. Tag the image (optional)
 ```bash
-docker tag technurdd/videotester technurdd/videotester:latest
+docker tag content-analysis content-analysis:latest
 ```
 
 ### 3. Login to Docker Hub
@@ -18,10 +22,27 @@ docker login
 ```
 (Enter your Docker Hub username and password)
 
-### 4. Push the image to Docker Hub
+### 4. Push the image to Docker Hub (if using)
 ```bash
-docker push technurdd/videotester:latest
+docker push your-dockerhub-user/content-analysis:latest
 ```
+
+## Docker Compose
+
+### Development (Local testing with hot-reload)
+```bash
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+### Production (Deploying on EC2)
+```bash
+docker-compose up -d --build
+```
+
+### Useful Commands
+- **View logs**: `docker-compose logs -f`
+- **Stop everything**: `docker-compose down`
+- **Reset database**: `rm backend/media_validator.db` (then restart containers)
 
 ## EC2 Commands
 
@@ -58,11 +79,11 @@ docker run -d \
 ### 5. Run with volume for persistent database (recommended)
 ```bash
 docker run -d \
-  --name videotester \
+  --name content-analysis-api \
   -p 6969:6969 \
-  -v videotester-data:/app/backend \
+  -v content-analysis-data:/app/backend \
   --restart unless-stopped \
-  technurdd/videotester:latest
+  content-analysis:latest
 ```
 
 ### 6. View logs

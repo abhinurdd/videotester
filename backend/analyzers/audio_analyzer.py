@@ -56,6 +56,8 @@ class AudioAnalyzer:
             if audio_path != self.filepath and os.path.exists(audio_path):
                 os.remove(audio_path)
             
+            import gc
+            gc.collect() # Free up memory from librosa
             return metrics
             
         except Exception as e:

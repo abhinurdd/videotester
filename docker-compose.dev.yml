@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: content-analysis-redis-dev
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+
+  api:
+    image: technurdd/content-analysis:dev
+    build: .
+    container_name: content-analysis-api-dev
+    depends_on:
+      - redis
+    ports:
+      - "6969:6969"
+    command: python -m uvicorn main:app --host 0.0.0.0 --port 6969 --reload
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=True
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+    restart: unless-stopped
+
+  worker:
+    image: technurdd/content-analysis:dev
+    build: .
+    container_name: content-analysis-worker-dev
+    depends_on:
+      - redis
+    command: python -m celery -A worker.celery worker --loglevel=info --concurrency=2
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend:/app/backend
+    restart: unless-stopped

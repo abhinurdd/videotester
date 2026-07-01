@@ -157,27 +157,48 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
         final_payload = {}
 
         if is_video:
-            update_status(file_id, "processing", 15, "Analyzing video...")
-            # Step 1: Video Analysis
-            video_analyzer = VideoAnalyzer(filepath)
-            video_metrics = video_analyzer.analyze()
+            from concurrent.futures import ThreadPoolExecutor
             
-            update_status(file_id, "processing", 40, "Analyzing audio...")
-            # Step 2: Audio Analysis
-            audio_analyzer = AudioAnalyzer(filepath)
-            audio_metrics = audio_analyzer.analyze()
+            update_status(file_id, "processing", 15, "Initializing analysis...")
             
-            update_status(file_id, "processing", 70, "Transcribing & checking brand via Groq...")
-            # Step 3: Brand Compliance
+            # Start Groq transcription in parallel (I/O bound)
             brand_compliance = {}
+            groq_future = None
+            executor = None
+            
             if brand_name:
                 try:
                     analyzer = get_analyzer()
-                    segments = analyzer.transcribe_audio(filepath, brand_hint=brand_name)
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    # Submit the task to the thread pool
+                    groq_future = executor.submit(analyzer.transcribe_audio, filepath, brand_hint=brand_name)
+                    logger.info("Started Groq transcription in background thread.")
+                except Exception as e:
+                    logger.error(f"Failed to start Groq transcription thread: {e}")
+
+            # Step 1: Video Analysis (CPU bound)
+            update_status(file_id, "processing", 20, "Analyzing video...")
+            video_analyzer = VideoAnalyzer(filepath)
+            video_metrics = video_analyzer.analyze()
+            gc.collect() # Cleanup after heavy video analysis
+            
+            # Step 2: Audio Analysis (CPU bound)
+            update_status(file_id, "processing", 50, "Analyzing audio...")
+            audio_analyzer = AudioAnalyzer(filepath)
+            audio_metrics = audio_analyzer.analyze()
+            gc.collect() # Cleanup after heavy audio analysis
+            
+            # Step 3: Wait for Groq results
+            if groq_future:
+                update_status(file_id, "processing", 75, "Waiting for transcript results...")
+                try:
+                    segments = groq_future.result(timeout=120) # 2 min timeout
+                    analyzer = get_analyzer() # Get analyzer again for brand check
                     brand_result = analyzer.count_brand_mentions(segments, brand_name)
                     brand_compliance = brand_result
+                    logger.info("Groq transcription thread completed.")
                 except Exception as e:
-                    logger.error(f"Brand check failed: {e}")
+                    logger.error(f"Brand check failed or timed out: {e}")
                     brand_compliance = {
                         "target_brand": brand_name,
                         "error": str(e),
@@ -185,7 +206,10 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
                         "timestamps": [],
                         "full_transcript": []
                     }
-
+                finally:
+                    if executor:
+                        executor.shutdown(wait=False)
+            
             # Step 4: Scoring (Legacy Video Format)
             score_result = calculate_quality_score(video_metrics, audio_metrics)
             
@@ -296,8 +320,26 @@ def run_analysis_task(file_id: int, filepath: str, brand_name: Optional[str] = N
                 "metadata": metadata
             }
             
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            }
+            
+            # Add secret header for AWS WAF whitelisting if configured
+            callback_secret = os.getenv("CALLBACK_SECRET")
+            if callback_secret:
+                headers["X-Callback-Secret"] = callback_secret
+            
             logger.info(f"Triggering callback to: {target_callback}")
-            response = requests.post(target_callback, json=callback_data, timeout=30)
+            response = requests.post(target_callback, json=callback_data, headers=headers, timeout=30)
+            
+            if response.status_code == 403:
+                logger.error(f"Callback Forbidden (403). Possible WAF/Bot protection. Response: {response.text[:500]}")
+            
             response.raise_for_status()
             logger.info("Callback successful")
         except Exception as cb_e:
@@ -324,6 +366,6 @@ if __name__ == "__main__":
     celery.worker_main([
         'worker', 
         '--loglevel=info', 
-        '--concurrency=2', 
-        '--max-tasks-per-child=10'
+        '--concurrency=1', 
+        '--pool=solo'
     ])

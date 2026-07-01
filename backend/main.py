@@ -270,7 +270,40 @@ async def analyze_r2(request: R2AnalysisRequest, background_tasks: BackgroundTas
     
     # Generate unique ID for this analysis run
     unique_id = str(uuid.uuid4())[:8]
-    filename = Path(request.r2_url).name.split('?')[0] # Get filename without query params
+    
+    # Extract filename from URL, handling cases where it might be empty or missing
+    try:
+        filename = Path(request.r2_url).name.split('?')[0]
+    except Exception:
+        filename = "downloaded_file"
+        
+    if not filename:
+        filename = "downloaded_file"
+        
+    # Ensure there's a valid media extension for Groq and other tools to work correctly
+    video_exts = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.mpeg', '.mpg', '.3gp', '.m4v'}
+    image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.heic', '.heif'}
+    allowed_extensions = video_exts | image_exts
+    
+    has_extension = any(filename.lower().endswith(ext) for ext in allowed_extensions)
+    
+    if not has_extension:
+        # Check content_type or default to mp4
+        ct = (request.content_type or "").lower()
+        if any(v in ct for v in ['reel', 'reels', 'video', 'short', 'shorts']):
+            filename += ".mp4"
+        elif any(i in ct for i in ['post', 'posts', 'image']):
+            filename += ".jpg"
+        else:
+            # Fallback based on URL path hints if content_type is missing
+            url_path = request.r2_url.lower()
+            if 'reels' in url_path or 'shorts' in url_path or 'video' in url_path:
+                filename += ".mp4"
+            elif 'posts' in url_path or 'images' in url_path:
+                filename += ".jpg"
+            else:
+                filename += ".mp4" # Default fallback
+            
     safe_filename = f"r2_{unique_id}_{filename}"
     filepath = UPLOAD_DIR / safe_filename
     

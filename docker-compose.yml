@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: content-analysis-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+
+  api:
+    image: technurdd/content-analysis:prod
+    build: .
+    container_name: content-analysis-api
+    depends_on:
+      - redis
+    ports:
+      - "6969:6969"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./media_validator.db:/app/backend/media_validator.db
+      - ./uploads:/app/backend/uploads
+    restart: unless-stopped
+
+  worker:
+    image: technurdd/content-analysis:prod
+    build: .
+    container_name: content-analysis-worker
+    depends_on:
+      - redis
+    command: python -m celery -A worker.celery worker --loglevel=info --concurrency=1 --max-tasks-per-child=10
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./media_validator.db:/app/backend/media_validator.db
+      - ./uploads:/app/backend/uploads
+    restart: unless-stopped
+
+volumes:
+  uploads:

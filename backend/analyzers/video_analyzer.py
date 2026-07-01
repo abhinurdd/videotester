@@ -140,12 +140,15 @@ class VideoAnalyzer:
         blocking_artifacts = []
         
         try:
-            brisque = cv2.quality.QualityBRISQUE_create(
-                cv2.samples.findFile("brisque_model_live.yml"),
-                cv2.samples.findFile("brisque_range_live.yml")
-            )
-            use_brisque = True
-        except:
+            model_path = cv2.samples.findFile("brisque_model_live.yml", required=False)
+            range_path = cv2.samples.findFile("brisque_range_live.yml", required=False)
+            
+            if model_path and range_path and os.path.exists(model_path) and os.path.exists(range_path):
+                brisque = cv2.quality.QualityBRISQUE_create(model_path, range_path)
+                use_brisque = True
+            else:
+                use_brisque = False
+        except Exception as e:
             use_brisque = False
         
         frame_idx = 0
@@ -154,7 +157,6 @@ class VideoAnalyzer:
         while samples_taken < max_samples:
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
-            
             if not ret:
                 break
             

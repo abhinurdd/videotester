@@ -1,15 +1,22 @@
-# Use Python 3.11 slim image as base
+# Use Python 3.11 slim image for a smaller footprint
 FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/backend
 
 # Set working directory
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+# ffmpeg: for video/audio processing
+# libsm6, libxext6: for OpenCV
+# libgomp1: for ONNX Runtime (required for ARM64/t4g instances)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
-    libxrender-dev \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,14 +30,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend /app/backend
 COPY frontend /app/frontend
 
-# Create uploads directory
+# Create uploads directory and ensure it exists
 RUN mkdir -p /app/backend/uploads
 
-# Set working directory to backend
+# Set working directory to backend for runtime
 WORKDIR /app/backend
 
-# Expose port
+# Expose port (default for API)
 EXPOSE 6969
 
-# Run the application
+# The default command is for the API
+# Docker Compose will override this for the worker
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "6969"]

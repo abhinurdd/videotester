@@ -40,10 +40,36 @@ class TranscriptAnalyzer:
 
         logger.info(f"Transcribing audio via Groq: {audio_path}")
         
+        temp_path = None
         try:
-            with open(audio_path, "rb") as file:
+            import tempfile
+            import subprocess
+            
+            # Create a temp WAV file for Groq (16kHz, Mono) to ensure high quality and small size
+            temp_audio = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+            temp_path = temp_audio.name
+            temp_audio.close()
+            
+            logger.info(f"Extracting/Converting audio to 16kHz Mono WAV for Groq: {temp_path}")
+            
+            # Use FFmpeg to convert to 16kHz, Mono WAV
+            result = subprocess.run([
+                'ffmpeg', '-y', '-i', audio_path,
+                '-vn',                  # No video
+                '-acodec', 'pcm_s16le', # 16-bit PCM
+                '-ar', '16000',         # 16kHz (native for Whisper)
+                '-ac', '1',             # Mono
+                temp_path
+            ], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"FFmpeg failed: {result.stderr}")
+                raise Exception(f"FFmpeg extraction failed: {result.stderr}")
+
+            with open(temp_path, "rb") as file:
+                filename = os.path.basename(temp_path)
                 transcription = self.client.audio.transcriptions.create(
-                    file=(os.path.basename(audio_path), file.read()),
+                    file=(filename, file.read()),
                     model=self.model_size,
                     temperature=0.03,
                     response_format="verbose_json",
@@ -90,6 +116,13 @@ class TranscriptAnalyzer:
         except Exception as e:
             logger.error(f"Groq transcription failed: {e}")
             return []
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                    logger.info(f"Cleaned up temp audio file: {temp_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete temp file {temp_path}: {e}")
 
     def count_brand_mentions(self, segments: List[Dict[str, Any]], brand_name: str, threshold: int = 60) -> Dict[str, Any]:
         full_transcript = []

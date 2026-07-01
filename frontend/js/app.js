@@ -379,7 +379,6 @@ function displayResults(data) {
           if (transcriptCard) transcriptCard.style.display = "none";
       }
   }
- }
 
   // Update technical specs
   const specs = data.technical_specs || {};
